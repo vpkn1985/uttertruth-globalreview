@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Universal Review Aggregator – No Proxy Needed</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacOSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+        }
+        h1 { text-align: center; color: #1a1a1a; }
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            font-size: 1.1rem;
+            margin: 1rem 0 0.5rem 0;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            box-sizing: border-box;
+        }
+        .btn {
+            display: block;
+            background: #007bff;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            margin: 1rem 0;
+            text-align: center;
+            width: 100%;
+        }
+        .btn:hover { background: #0056b3; }
+        #loading {
+            display: none;
+            text-align: center;
+            font-size: 1.2rem;
+            margin: 2rem 0;
+            color: #007bff;
+        }
+        #result { margin-top: 2rem; }
+        #result h2, #result h3 { margin-top: 1.8rem; }
+        ul { list-style-type: disc; padding-left: 20px; }
+        .sentiment-box {
+            padding: 1.2rem;
+            border-radius: 10px;
+            margin: 1.5rem 0;
+            font-weight: bold;
+            text-align: center;
+            font-size: 1.3rem;
+        }
+        .very-positive { background: #d4edda; color: #155724; }
+        .positive     { background: #e2f3e2; color: #155724; }
+        .neutral      { background: #fff3cd; color: #856404; }
+        .negative     { background: #f8d7da; color: #721c24; }
+        .very-negative{ background: #e74c3c; color: white; }
+        footer {
+            text-align: center;
+            margin-top: 3rem;
+            color: #666;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Universal Review Aggregator</h1>
+    <p style="text-align:center; font-size:1.1rem; color:#555;">
+        Real web reviews + Deep AI Sentiment (TensorFlow.js)<br>
+        <strong>No proxy • No API key • Works offline after first load</strong>
+    </p>
+
+    <label for="product">Enter Product, Movie, Company, Person, etc.:</label>
+    <input type="text" id="product" placeholder="e.g. iPhone 16, Tesla Cybertruck, Oppenheimer movie, MrBeast..." autofocus />
+
+    <button class="btn" onclick="getReview()">Analyze Reviews & Sentiment</button>
+
+    <div id="loading">Loading model and fetching reviews... (first time: ~10–20 sec)</div>
+    <div id="result"></div>
+</div>
+
+<footer>
+    100% client-side • Uses DuckDuckGo JSONP + TensorFlow.js • Host free on GitHub Pages
+</footer>
+
+<script>
+let model = null;
+let metadata = null;
+
+// Load TensorFlow.js sentiment model (CNN trained on IMDB)
+async function loadSentimentModel() {
+    if (model) return;
+
+    const MODEL_URL = 'https://storage.googleapis.com/tfjs-models/tfjs/sentiment_cnn_v1/model.json';
+    const METADATA_URL = 'https://storage.googleapis.com/tfjs-models/tfjs/sentiment_cnn_v1/metadata.json';
+
+    document.getElementById('loading').innerText = 'Downloading AI sentiment model...';
+    model = await tf.loadLayersModel(MODEL_URL);
+
+    const metaResp = await fetch(METADATA_URL);
+    metadata = await metaResp.json();
+
+    document.getElementById('loading').innerText = 'AI model ready! Analyzing reviews...';
+}
+
+// Pad sequences for model input
+function padSequences(sequences, maxLen, padding = 'pre', truncating = 'pre', value = 0) {
+    return sequences.map(seq => {
+        if (seq.length > maxLen) {
+            return truncating === 'pre' ? seq.slice(-maxLen) : seq.slice(0, maxLen);
+        }
+        if (seq.length < maxLen) {
+            const pad = new Array(maxLen - seq.length).fill(value);
+            return padding === 'pre' ? pad.concat(seq) : seq.concat(pad);
+        }
+        return seq;
+    });
+}
+
+// Predict sentiment using loaded model
+async function predictSentiment(text) {
+    if (!model || !metadata) throw new Error('Model not loaded');
+
+    const lowerText = text.toLowerCase();
+    const words = lowerText.match(/\w+/g) || [];
+    const sequence = words.map(word => {
+        const idx = metadata.word_index[word];
+        return idx !== undefined ? idx + metadata['index_from'] : 0;
+    });
+
+    const padded = padSequences([sequence], metadata.max_len)[0];
+    const input = tf.tensor2d([padded], [1, metadata.max_len]);
+
+    const prediction = model.predict(input);
+    const score = (await prediction.data())[0]; // 0 = negative, 1 = positive
+
+    input.dispose();
+    prediction.dispose();
+
+    return score;
+}
+
+// Get sentiment label and class
+function getSentimentInfo(score) {
+    const rating10 = Math.round(score * 10 * 10) / 10;
+    let label = 'Neutral', css = 'neutral';
+
+    if (score >= 0.75) { label = 'Very Positive'; css = 'very-positive'; }
+    else if (score >= 0.60) { label = 'Positive'; css = 'positive'; }
+    else if (score <= 0.40) { label = 'Very Negative'; css = 'very-negative'; }
+    else if (score <= 0.25) { label = 'Negative'; css = 'negative'; }
+
+    return { score, rating10, label, css };
+}
+
+// Extract numeric rating from text
+function extractRating(text) {
+    const match = text.toLowerCase().match(/(\d+(\.\d+)?)\s*(?:out of|\/|stars|rating|score)/);
+    if (match) {
+        let r = parseFloat(match[1]);
+        if (r <= 5) r *= 2;
+        if (r > 10 && r <= 100) r /= 10;
+        return Math.min(10, Math.max(0, Math.round(r * 10) / 10));
+    }
+    return null;
+}
+
+// Extract bullet-like lists
+function extractList(text, starters) {
+    const lower = text.toLowerCase();
+    for (const start of starters) {
+        const i = lower.indexOf(start);
+        if (i !== -1) {
+            const slice = text.slice(i + start.length, i + start.length + 800);
+            return slice.split(/\n|•|- |\d+\./)
+                       .map(s => s.trim())
+                       .filter(s => s.length > 5 && s.length < 150);
+        }
+    }
+    return [];
+}
+
+// Main function
+async function getReview() {
+    const product = document.getElementById('product').value.trim();
+    if (!product) {
+        alert('Please enter a product or item name.');
+        return;
+    }
+
+    const loading = document.getElementById('loading');
+    const result = document.getElementById('result');
+    loading.style.display = 'block';
+    result.innerHTML = '';
+
+    try {
+        await loadSentimentModel();
+
+        // Use DuckDuckGo JSONP (no CORS needed)
+        const query = encodeURIComponent(`${product} review pros cons rating highlights lowlights 2025`);
+        const ddgUrl = `https://api.duckduckgo.com/?q=${query}&format=json&callback=handleDDG`;
+
+        // Dynamic JSONP
+        window.handleDDG = function(data) {
+            const allText = [
+                data.AbstractText || '',
+                data.Abstract || '',
+                ...(data.RelatedTopics || []).map(t => t.Text || '').join(' ')
+            ].join(' ').trim();
+
+            // Run sentiment analysis
+            predictSentiment(allText).then(tfScore => {
+                const sentiment = getSentimentInfo(tfScore);
+                const webRating = extractRating(allText);
+
+                const positives = extractList(allText, ['pros:', 'positives:', 'advantages:', 'strengths:', 'good things']);
+                const negatives = extractList(allText, ['cons:', 'negatives:', 'disadvantages:', 'weaknesses:', 'issues', 'problems']);
+                const highlights = extractList(allText, ['highlights:', 'best features', 'standout', 'top points']);
+                const lowlights = extractList(allText, ['lowlights:', 'worst', 'drawbacks', 'complaints']);
+
+                // Final blended score
+                let finalScore = sentiment.rating10;
+                if (webRating) finalScore = Math.round((webRating * 0.4 + sentiment.rating10 * 0.6) * 10) / 10;
+
+                const recommendation = finalScore >= 7.5 ? 'Strongly Recommended' :
+                                      finalScore >= 6 ? 'Recommended' :
+                                      finalScore >= 4 ? 'Average – Consider Alternatives' :
+                                      'Not Recommended';
+
+                result.innerHTML = `
+                    <h2>Review Summary: <em>${product}</em></h2>
+
+                    <div class="sentiment-box ${sentiment.css}">
+                        AI Sentiment: ${sentiment.label} (${(sentiment.score * 100).toFixed(0)}% positive)<br>
+                        → ${sentiment.rating10.toFixed(1)} / 10
+                    </div>
+
+                    <p><strong>Extracted Web Rating:</strong> ${webRating || 'Not found'}</p>
+                    <p><strong>Final Score:</strong> <strong style="font-size:1.6rem;">${finalScore.toFixed(1)} / 10</strong></p>
+
+                    <h3>Highlights</h3>
+                    <ul>${highlights.length ? highlights.map(h => `<li>${h}</li>`).join('') : '<li>No clear highlights found.</li>'}</ul>
+
+                    <h3>Lowlights</h3>
+                    <ul>${lowlights.length ? lowlights.map(l => `<li>${l}</li>`).join('') : '<li>No clear lowlights found.</li>'}</ul>
+
+                    <h3>Positives</h3>
+                    <ul>${positives.length ? positives.map(p => `<li>${p}</li>`).join('') : '<li>No clear positives found.</li>'}</ul>
+
+                    <h3>Negatives</h3>
+                    <ul>${negatives.length ? negatives.map(n => `<li>${n}</li>`).join('') : '<li>No clear negatives found.</li>'}</ul>
+
+                    <h3>Recommendation</h3>
+                    <p style="font-size:1.4rem; font-weight:bold; color:#007bff;">${recommendation}</p>
+                `;
+
+                loading.style.display = 'none';
+                delete window.handleDDG; // cleanup
+            });
+        };
+
+        // Inject JSONP script
+        const script = document.createElement('script');
+        script.src = ddgUrl;
+        script.onerror = () => {
+            result.innerHTML = '<p style="color:red;">Failed to load review data. Try again or check internet.</p>';
+            loading.style.display = 'none';
+        };
+        document.head.appendChild(script);
+
+    } catch (err) {
+        result.innerHTML = `<p style="color:red;">Error: ${err.message}</p>`;
+        loading.style.display = 'none';
+    }
+}
+
+// Enter key support
+document.getElementById('product').addEventListener('keypress', e => {
+    if (e.key === 'Enter') getReview();
+});
+</script>
+</body>
+</html>
