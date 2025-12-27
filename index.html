@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Universal Review Aggregator – No API Key</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacOSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+        }
+        h1 {
+            text-align: center;
+            color: #1a1a1a;
+        }
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            font-size: 1.1rem;
+            margin: 1rem 0;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            box-sizing: border-box;
+        }
+        .btn {
+            display: block;
+            background: #007bff;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+            margin: 0.5rem 0;
+            text-align: center;
+        }
+        .btn:hover {
+            background: #0056b3;
+        }
+        #loading {
+            display: none;
+            text-align: center;
+            font-size: 1.2rem;
+            margin: 2rem 0;
+        }
+        #result {
+            margin-top: 2rem;
+        }
+        #result h2 {
+            margin-top: 2rem;
+        }
+        ul {
+            list-style-type: disc;
+            padding-left: 20px;
+        }
+        footer {
+            text-align: center;
+            margin-top: 3rem;
+            color: #666;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Universal Review Aggregator</h1>
+    <p style="text-align:center; font-size:1.1rem; color:#555;">
+        Enter any product, movie, company, person, channel, food, etc.<br>
+        <strong>Consolidates reviews from internet search (honest, unbiased)</strong><br>
+        (No API key • Client-side only • Free forever)
+    </p>
+
+    <label for="proxy">CORS Proxy URL (e.g., https://yourworker.workers.dev/corsproxy/?apiurl=):</label>
+    <input type="text" id="proxy" placeholder="Enter your Cloudflare Worker proxy URL" value="" required />
+
+    <label for="product">Product Name:</label>
+    <input type="text" id="product" placeholder="Example: iPhone 15, Dune Part Two, MrBeast..." autofocus required />
+
+    <a class="btn" onclick="getReview()">Get Consolidated Review</a>
+
+    <div id="loading">Loading and analyzing reviews...</div>
+    <div id="result"></div>
+</div>
+
+<footer>
+    Pure client-side static page • Host for free on GitHub Pages
+</footer>
+
+<script>
+    const input = document.getElementById('product');
+    const proxyInput = document.getElementById('proxy');
+    const loading = document.getElementById('loading');
+    const result = document.getElementById('result');
+
+    // Allow Enter key to trigger
+    input.addEventListener('keypress', e => {
+        if (e.key === 'Enter') getReview();
+    });
+
+    async function getReview() {
+        const product = input.value.trim();
+        const proxy = proxyInput.value.trim();
+
+        if (!product || !proxy) {
+            alert("Please enter both product name and proxy URL.");
+            return;
+        }
+
+        loading.style.display = 'block';
+        result.innerHTML = '';
+
+        try {
+            // Fetch average rating
+            const ratingData = await fetchProxy(proxy, `https://api.duckduckgo.com/?q=${encodeURIComponent(product + ' average rating review')}&format=json`);
+            const rating = extractRating(ratingData);
+
+            // Fetch pros and cons
+            const prosConsData = await fetchProxy(proxy, `https://api.duckduckgo.com/?q=${encodeURIComponent(product + ' pros and cons review')}&format=json`);
+            const { positives, negatives } = extractProsCons(prosConsData);
+
+            // Fetch highlights and lowlights (similar to pros/cons)
+            const highlightsData = await fetchProxy(proxy, `https://api.duckduckgo.com/?q=${encodeURIComponent(product + ' highlights lowlights review')}&format=json`);
+            const { highlights, lowlights } = extractHighlightsLowlights(highlightsData);
+
+            // Final recommendation
+            const recommendation = rating >= 7 ? 'Recommended' : rating >= 5 ? 'Average - Consider alternatives' : 'Not recommended';
+
+            // Render result
+            result.innerHTML = `
+                <h2>Consolidated Review for ${product}</h2>
+                <p><strong>Final Rating:</strong> ${rating ? rating + '/10' : 'N/A'}</p>
+                <h3>Highlights:</h3>
+                <ul>${highlights.map(h => `<li>${h}</li>`).join('') || '<li>No specific highlights found.</li>'}</ul>
+                <h3>Lowlights:</h3>
+                <ul>${lowlights.map(l => `<li>${l}</li>`).join('') || '<li>No specific lowlights found.</li>'}</ul>
+                <h3>Positives:</h3>
+                <ul>${positives.map(p => `<li>${p}</li>`).join('') || '<li>No specific positives found.</li>'}</ul>
+                <h3>Negatives:</h3>
+                <ul>${negatives.map(n => `<li>${n}</li>`).join('') || '<li>No specific negatives found.</li>'}</ul>
+                <h3>Final Recommendation:</h3>
+                <p>${recommendation}</p>
+            `;
+
+        } catch (error) {
+            result.innerHTML = `<p style="color: red;">Error: ${error.message}. Check your proxy URL and try again.</p>`;
+        } finally {
+            loading.style.display = 'none';
+        }
+    }
+
+    async function fetchProxy(proxy, target) {
+        const url = proxy + encodeURIComponent(target);
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Fetch failed');
+        return await response.json();
+    }
+
+    function extractRating(data) {
+        const text = (data.AbstractText + ' ' + data.RelatedTopics.map(t => t.Text).join(' ')).toLowerCase();
+        const match = text.match(/(\d+(\.\d+)?) ?(out of|\/|stars?|rating)/);
+        if (match) {
+            let rat = parseFloat(match[1]);
+            // Normalize to 10 if out of 5 or 100
+            if (rat <= 5) rat *= 2;
+            if (rat > 10 && rat <= 100) rat /= 10;
+            return Math.round(rat * 10) / 10; // One decimal
+        }
+        return null;
+    }
+
+    function extractProsCons(data) {
+        const text = data.AbstractText + ' ' + data.RelatedTopics.map(t => t.Text).join(' ');
+        const positives = extractList(text, ['pros:', 'positives:', 'advantages:', 'strengths:']);
+        const negatives = extractList(text, ['cons:', 'negatives:', 'disadvantages:', 'weaknesses:', 'lowlights:']);
+        return { positives, negatives };
+    }
+
+    function extractHighlightsLowlights(data) {
+        const text = data.AbstractText + ' ' + data.RelatedTopics.map(t => t.Text).join(' ');
+        const highlights = extractList(text, ['highlights:', 'best features:', 'pros:']);
+        const lowlights = extractList(text, ['lowlights:', 'worst features:', 'cons:']);
+        return { highlights, lowlights };
+    }
+
+    function extractList(text, starters) {
+        for (const starter of starters) {
+            const start = text.toLowerCase().indexOf(starter);
+            if (start !== -1) {
+                const listText = text.substring(start + starter.length, start + starter.length + 500).trim(); // Take next 500 chars
+                return listText.split(/[\n•-]/).map(item => item.trim()).filter(item => item);
+            }
+        }
+        return [];
+    }
+</script>
+</body>
+</html>
