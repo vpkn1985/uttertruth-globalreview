@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Universal Review Aggregator + Sentiment Analysis</title>
+    <title>Universal Review Aggregator + TF.js Sentiment</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
     <style>
         body {
             font-family: -apple-system, BlinkMacOSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -14,10 +15,7 @@
             color: #333;
             line-height: 1.6;
         }
-        h1 {
-            text-align: center;
-            color: #1a1a1a;
-        }
+        h1 { text-align: center; color: #1a1a1a; }
         .container {
             background: white;
             padding: 2rem;
@@ -47,31 +45,18 @@
             text-align: center;
             width: 100%;
         }
-        .btn:hover {
-            background: #0056b3;
-        }
-        #loading {
-            display: none;
-            text-align: center;
-            font-size: 1.2rem;
-            margin: 2rem 0;
-        }
-        #result {
-            margin-top: 2rem;
-        }
-        #result h2, #result h3 {
-            margin-top: 1.8rem;
-        }
-        ul {
-            list-style-type: disc;
-            padding-left: 20px;
-        }
+        .btn:hover { background: #0056b3; }
+        #loading { display: none; text-align: center; font-size: 1.2rem; margin: 2rem 0; }
+        #result { margin-top: 2rem; }
+        #result h2, #result h3 { margin-top: 1.8rem; }
+        ul { list-style-type: disc; padding-left: 20px; }
         .sentiment-box {
             padding: 1rem;
             border-radius: 8px;
             margin: 1rem 0;
             font-weight: bold;
             text-align: center;
+            font-size: 1.2rem;
         }
         .very-positive { background: #d4edda; color: #155724; }
         .positive     { background: #e2f3e2; color: #155724; }
@@ -89,143 +74,159 @@
 <body>
 
 <div class="container">
-    <h1>Universal Review Aggregator + Sentiment</h1>
+    <h1>Universal Review Aggregator + TensorFlow.js Sentiment</h1>
     <p style="text-align:center; font-size:1.1rem; color:#555;">
-        Aggregates reviews + performs client-side sentiment analysis<br>
-        (No API key • Pure browser + your CORS proxy • Free)
+        Aggregates reviews from web + deep learning sentiment analysis in browser<br>
+        (No API key • Uses official TF.js IMDB model • Your CORS proxy)
     </p>
 
-    <label for="proxy">CORS Proxy URL (e.g. https://your-worker.workers.dev/corsproxy/?apiurl=):</label>
-    <input type="text" id="proxy" placeholder="Enter your Cloudflare Worker proxy URL" value="" required />
+    <label for="proxy">CORS Proxy URL (required for DuckDuckGo fetches):</label>
+    <input type="text" id="proxy" placeholder="https://your-worker.workers.dev/corsproxy/?apiurl=" value="" required />
 
     <label for="product">Product / Item Name:</label>
-    <input type="text" id="product" placeholder="Example: iPhone 16 Pro, Breaking Bad, Tesla..." autofocus required />
+    <input type="text" id="product" placeholder="Example: iPhone 16 Pro Max, Cyberpunk 2077, MrBeast..." autofocus required />
 
     <button class="btn" onclick="getReview()">Analyze Reviews & Sentiment</button>
 
-    <div id="loading">Loading reviews & computing sentiment...</div>
+    <div id="loading">Loading model & analyzing reviews... (first time may take 10–20 sec)</div>
     <div id="result"></div>
 </div>
 
 <footer>
-    Pure client-side • Host free on GitHub Pages • Sentiment: simple rule-based (AFINN-inspired)
+    Pure client-side • TensorFlow.js CNN sentiment model (IMDB) • Host free on GitHub Pages
 </footer>
 
 <script>
-// === Basic Client-side Sentiment Analyzer (AFINN-inspired) ===
-const positiveWords = [
-    'good', 'great', 'excellent', 'awesome', 'amazing', 'love', 'best', 'fantastic', 'perfect', 'wonderful',
-    'nice', 'happy', 'beautiful', 'superb', 'outstanding', 'brilliant', 'impressive', 'recommend', 'worth',
-    'solid', 'top', 'favorite', 'enjoy', 'like', 'cool', 'incredible', 'stellar'
-];
+let model = null;
+let metadata = null;
 
-const negativeWords = [
-    'bad', 'worst', 'terrible', 'awful', 'poor', 'disappointing', 'hate', 'problem', 'issue', 'fail',
-    'broken', 'slow', 'expensive', 'overrated', 'waste', 'boring', 'ugly', 'weak', 'avoid', 'sucks',
-    'garbage', 'trash', 'mediocre', 'pathetic', 'frustrating', 'annoying'
-];
+// Lazy-load TF.js sentiment model & metadata once
+async function loadSentimentModel() {
+    if (model) return; // already loaded
 
-const negationWords = ['not', 'no', 'never', 'none', 'nothing', "don't", "doesn't", "isn't", "wasn't", "aren't"];
+    const MODEL_URL = 'https://storage.googleapis.com/tfjs-models/tfjs/sentiment_cnn_v1/model.json';
+    const METADATA_URL = 'https://storage.googleapis.com/tfjs-models/tfjs/sentiment_cnn_v1/metadata.json';
 
-function analyzeSentiment(text) {
-    if (!text) return { score: 0, label: 'Neutral' };
-
-    const words = text.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/);
-    let score = 0;
-    let wordCount = 0;
-
-    for (let i = 0; i < words.length; i++) {
-        const word = words[i];
-        if (positiveWords.includes(word)) {
-            score += 1;
-            wordCount++;
-        } else if (negativeWords.includes(word)) {
-            let negated = false;
-            // Simple negation check (look back 1-3 words)
-            for (let j = Math.max(0, i-3); j < i; j++) {
-                if (negationWords.includes(words[j])) {
-                    negated = true;
-                    break;
-                }
-            }
-            score += negated ? 1 : -1;
-            wordCount++;
-        }
+    try {
+        document.getElementById('loading').innerText = 'Loading TensorFlow.js sentiment model...';
+        model = await tf.loadLayersModel(MODEL_URL);
+        
+        const metaResponse = await fetch(METADATA_URL);
+        metadata = await metaResponse.json();
+        
+        document.getElementById('loading').innerText = 'Model loaded! Analyzing...';
+    } catch (err) {
+        throw new Error('Failed to load TF.js model: ' + err.message);
     }
-
-    const normalized = wordCount > 0 ? score / wordCount : 0;
-    // Map -1..+1 → 0..10
-    const rating10 = Math.round(((normalized + 1) / 2) * 10 * 10) / 10;
-
-    let label = 'Neutral';
-    if (normalized > 0.4) label = 'Very Positive';
-    else if (normalized > 0.15) label = 'Positive';
-    else if (normalized < -0.4) label = 'Very Negative';
-    else if (normalized < -0.15) label = 'Negative';
-
-    return { score: normalized, rating10, label, wordCount };
 }
 
-// === Main logic ===
+function padSequences(sequences, maxLen, padding = 'pre', truncating = 'pre', value = 0) {
+    return sequences.map(seq => {
+        if (seq.length > maxLen) {
+            if (truncating === 'pre') return seq.slice(seq.length - maxLen);
+            return seq.slice(0, maxLen);
+        }
+        const padLen = maxLen - seq.length;
+        const padArray = new Array(padLen).fill(value);
+        return padding === 'pre' ? [...padArray, ...seq] : [...seq, ...padArray];
+    });
+}
+
+async function predictSentiment(text) {
+    if (!model || !metadata) throw new Error('Model not loaded');
+
+    const words = text.toLowerCase().trim().split(/\s+/).slice(0, metadata.max_len);
+    const wordIndices = words.map(w => {
+        const idx = metadata.word_index[w];
+        return idx != null ? idx + metadata.padding_idx : 0; // 0 = OOV
+    });
+
+    const sequence = padSequences([wordIndices], metadata.max_len, 'pre', 'pre', 0)[0];
+
+    const inputTensor = tf.tensor2d([sequence], [1, metadata.max_len]);
+    const prediction = model.predict(inputTensor);
+    const score = (await prediction.data())[0]; // 0→1 (neg→pos)
+
+    inputTensor.dispose();
+    prediction.dispose();
+
+    return score;
+}
+
+// Map TF.js score (0-1) → 0-10 scale + label
+function getSentimentInfo(score) {
+    const rating10 = Math.round(score * 10 * 10) / 10;
+    let label = 'Neutral';
+    let cssClass = 'neutral';
+
+    if (score >= 0.75) { label = 'Very Positive'; cssClass = 'very-positive'; }
+    else if (score >= 0.60) { label = 'Positive'; cssClass = 'positive'; }
+    else if (score <= 0.40) { label = 'Very Negative'; cssClass = 'very-negative'; }
+    else if (score <= 0.25) { label = 'Negative'; cssClass = 'negative'; }
+
+    return { score, rating10, label, cssClass };
+}
+
+// === Main analysis function ===
 const input = document.getElementById('product');
 const proxyInput = document.getElementById('proxy');
 const loading = document.getElementById('loading');
-const result = document.getElementById('result');
+const resultDiv = document.getElementById('result');
 
 async function getReview() {
     const product = input.value.trim();
     const proxy = proxyInput.value.trim();
 
     if (!product || !proxy) {
-        alert("Please enter both product name and proxy URL.");
+        alert("Please enter product name and CORS proxy URL.");
         return;
     }
 
     loading.style.display = 'block';
-    result.innerHTML = '';
+    resultDiv.innerHTML = '';
 
     try {
-        // 1. Fetch rating-related info
-        const ratingData = await fetchProxy(proxy, `https://api.duckduckgo.com/?q=${encodeURIComponent(product + ' average rating review site:reddit.com OR site:amazon.com OR site:trustpilot.com OR site:metacritic.com')}&format=json`);
-        const rating = extractRating(ratingData);
+        await loadSentimentModel(); // ensure model is ready
 
-        // 2. Fetch general review text for sentiment & pros/cons
-        const reviewData = await fetchProxy(proxy, `https://api.duckduckgo.com/?q=${encodeURIComponent(product + ' review pros cons highlights')}&format=json`);
+        // Fetch review-related info
+        const reviewQuery = `${product} review pros cons highlights lowlights rating`;
+        const data = await fetchProxy(proxy, `https://api.duckduckgo.com/?q=${encodeURIComponent(reviewQuery)}&format=json`);
 
-        // Combine all possible text sources for sentiment
+        // Combine all text for sentiment
         const allText = [
-            reviewData.AbstractText || '',
-            ...(reviewData.RelatedTopics || []).map(t => t.Text || '')
+            data.AbstractText || '',
+            ...(data.RelatedTopics || []).map(t => t.Text || '')
         ].join(' ').replace(/\s+/g, ' ').trim();
 
-        const sentiment = analyzeSentiment(allText);
+        // Get TF.js sentiment
+        const tfScore = await predictSentiment(allText);
+        const sentiment = getSentimentInfo(tfScore);
 
-        // 3. Extract structured info (same as before)
-        const { positives, negatives } = extractProsCons(reviewData);
-        const { highlights, lowlights } = extractHighlightsLowlights(reviewData);
+        // Extract rating if possible
+        const rating = extractRating(data);
 
-        // 4. Final recommendation with sentiment influence
-        let finalScore = rating || 5;
-        if (sentiment.rating10) {
-            finalScore = Math.round((finalScore * 0.6 + sentiment.rating10 * 0.4) * 10) / 10; // blend
-        }
+        // Structured parts
+        const { positives, negatives } = extractProsCons(data);
+        const { highlights, lowlights } = extractHighlightsLowlights(data);
+
+        // Blend scores (sentiment has more weight since it's deeper)
+        let finalScore = rating ? (rating * 0.4 + sentiment.rating10 * 0.6) : sentiment.rating10;
+        finalScore = Math.min(10, Math.max(0, Math.round(finalScore * 10) / 10));
+
         const recommendation = finalScore >= 7.5 ? 'Strongly Recommended' :
                               finalScore >= 6 ? 'Recommended' :
                               finalScore >= 4 ? 'Mixed – Consider alternatives' : 'Not Recommended';
 
-        // 5. Render
-        let sentimentClass = sentiment.label.toLowerCase().replace(/\s+/g, '-');
-
-        result.innerHTML = `
+        resultDiv.innerHTML = `
             <h2>Review Summary for <em>${product}</em></h2>
 
-            <div class="sentiment-box ${sentimentClass}">
-                Overall Sentiment: ${sentiment.label} (score ≈ ${sentiment.score.toFixed(2)})
-                → Converted to scale: ${sentiment.rating10 ? sentiment.rating10.toFixed(1) + '/10' : 'N/A'}
+            <div class="sentiment-box ${sentiment.cssClass}">
+                TF.js Deep Sentiment: ${sentiment.label} (${(sentiment.score * 100).toFixed(0)}% positive)
+                → Scale: ${sentiment.rating10.toFixed(1)}/10
             </div>
 
-            <p><strong>Extracted Average Rating:</strong> ${rating ? rating + '/10' : 'N/A'} (from web sources)</p>
-            <p><strong>Blended Final Rating:</strong> <strong>${finalScore.toFixed(1)}/10</strong></p>
+            <p><strong>Extracted Web Rating:</strong> ${rating ? rating + '/10' : 'N/A'}</p>
+            <p><strong>Final Blended Rating:</strong> <strong style="font-size:1.4rem;">${finalScore.toFixed(1)}/10</strong></p>
 
             <h3>Highlights</h3>
             <ul>${highlights.map(h => `<li>${h}</li>`).join('') || '<li>No highlights detected.</li>'}</ul>
@@ -239,12 +240,12 @@ async function getReview() {
             <h3>Negatives</h3>
             <ul>${negatives.map(n => `<li>${n}</li>`).join('') || '<li>No clear negatives found.</li>'}</ul>
 
-            <h3>Final Recommendation</h3>
+            <h3>Recommendation</h3>
             <p style="font-size:1.3rem; font-weight:bold;">${recommendation}</p>
         `;
 
     } catch (error) {
-        result.innerHTML = `<p style="color: red;">Error: ${error.message}. Check proxy URL / internet.</p>`;
+        resultDiv.innerHTML = `<p style="color: red;">Error: ${error.message}<br>Check proxy / internet / ad-blocker.</p>`;
     } finally {
         loading.style.display = 'none';
     }
@@ -253,10 +254,11 @@ async function getReview() {
 async function fetchProxy(proxy, target) {
     const url = proxy + encodeURIComponent(target);
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`Proxy fetch failed: ${response.status}`);
+    if (!response.ok) throw new Error(`Proxy error: ${response.status}`);
     return await response.json();
 }
 
+// The same helper functions as before (extractRating, extractProsCons, extractHighlightsLowlights)
 function extractRating(data) {
     const text = (data.AbstractText + ' ' + (data.RelatedTopics || []).map(t => t.Text || '').join(' ')).toLowerCase();
     const match = text.match(/(\d+(\.\d+)?)\s*(?:out of|\/|of|stars?|rating|score)/i);
